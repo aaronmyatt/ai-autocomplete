@@ -97,6 +97,17 @@ const DEEPSEEK_DEFAULT_MODELS = ['deepseek-chat', 'deepseek-reasoner'];
 
 const GEMINI_DEFAULT_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-flash-latest', 'gemma-4-31b-it', 'gemma-4-26b-a4b-it', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview', 'gemma-3-27b-it', 'gemini-pro-latest'];
 
+// Fork patch: unified key lookup. Prefer the key stored in SecretStorage
+// (set via the 'Input Gemini/Cerebras API key' command), but fall back to the
+// DEEPSEEK_API_KEY environment variable so users who already export the key
+// in their shell profile don't have to paste it again.
+// Gotcha: GUI-launched apps on macOS don't inherit shell env — VSCodium must
+// be started from a shell (or via 'codium' CLI) for the env var to be visible.
+// Ref: https://code.visualstudio.com/api/references/vscode-api#ExtensionContext
+async function getAPIKey(context) {
+	return await context.secrets.get(GEMINI_API_SECRET_KEY_NAME) || process.env.DEEPSEEK_API_KEY || null;
+}
+
 let fimCounter = 0;
 
 // This method is called when your extension is activated
@@ -392,7 +403,7 @@ async function registerInputGeminiAPIKeyCommand(context) {
 			const geminiAPIKey = await vscode.window.showInputBox({
 				title: 'Input Gemini/Cerebras API key',
 				prompt: '................................................................ Enter your Gemini/Cerebras/DeepSeek API key ................................................................ .............................. Get free Cerebras API key at https://cloud.cerebras.ai (recommended) .............................. ............................... Get free Gemini API key at https://aistudio.google.com/u/1/api-keys .............................. ............................... Get DeepSeek API key at https://platform.deepseek.com/api_keys ............................... --------------------------------------------------------------------------------------------------------------',
-				placeHolder: `Paste your Gemini/Cerebras/DeepSeek API key here. ${await context.secrets.get(GEMINI_API_SECRET_KEY_NAME) ? 'Type DELETE to remove saved key.' : ''}`,
+				placeHolder: `Paste your Gemini/Cerebras/DeepSeek API key here. ${await getAPIKey(context) ? 'Type DELETE to remove saved key.' : ''}`,
 				password: true, // Mark input characters for security
 				ignoreFocusOut: true, // Keep the input box open when clicking outside
 				validateInput: (text) => {
@@ -435,7 +446,7 @@ async function registerSelectModelCommand(context) {
 
 			const models = ['default'];
 
-			const apiKey = await context.secrets.get(GEMINI_API_SECRET_KEY_NAME);
+			const apiKey = await getAPIKey(context);
 
 			if (String(apiKey).startsWith('csk-')) {
 				models.push(...CEREBRAS_DEFAULT_MODELS);
@@ -531,7 +542,7 @@ async function registerInlineCompletionItemProvider(context) {
 						return null;
 					}
 
-					const geminiAPIKey = await context.secrets.get(GEMINI_API_SECRET_KEY_NAME);
+					const geminiAPIKey = await getAPIKey(context);
 
 					if (!String(geminiAPIKey).startsWith('csk-') && inlineCompletionContext?.triggerKind === vscode.InlineCompletionTriggerKind.Invoke) {
 						return null;
@@ -723,7 +734,7 @@ async function fillInMiddle(context, token, filename, programmingLanguage, prefi
 			}
 		}
 
-		const geminiAPIKey = await context.secrets.get(GEMINI_API_SECRET_KEY_NAME);
+		const geminiAPIKey = await getAPIKey(context);
 
 		if (!geminiAPIKey) {
 			return await fsiovnFillInMiddle(context, token, filename, programmingLanguage, prefix, suffix);
@@ -1030,7 +1041,7 @@ async function getGeminiAPIKey(context) {
 			GET_GEMINI_API_KEY_BUTTON_LABEL,
 			// Fork patch: add a button linking to DeepSeek's key page.
 			'Get DeepSeek API key',
-			await context.secrets.get(GEMINI_API_SECRET_KEY_NAME) ? CHANGE_GEMINI_API_KEY_BUTTON_LABEL : INPUT_GEMINI_API_KEY_BUTTON_LABEL
+			await getAPIKey(context) ? CHANGE_GEMINI_API_KEY_BUTTON_LABEL : INPUT_GEMINI_API_KEY_BUTTON_LABEL
 		);
 
 		// User clicked button
@@ -1065,7 +1076,7 @@ async function promptInputGeminiAPIKey(context) {
 	try {
 
 		// Attempt to get key, otherwise prompt user to input key
-		await context.secrets.get(GEMINI_API_SECRET_KEY_NAME) || await inputGeminiAPIKey();
+		await getAPIKey(context) || await inputGeminiAPIKey();
 
 	} catch (error) {
 
