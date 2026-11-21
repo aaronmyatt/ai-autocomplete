@@ -9,6 +9,11 @@ const GET_GEMINI_API_KEY_URL = 'https://aistudio.google.com/u/1/api-keys';
 const GET_CEREBRAS_API_KEY_BUTTON_LABEL = 'Get Cerebras API key';
 const GET_CEREBRAS_API_KEY_URL = 'https://cloud.cerebras.ai';
 
+// Fork patch: add DeepSeek as a third provider.
+// DeepSeek serves an OpenAI-compatible chat/completions endpoint.
+// Ref: https://api-docs.deepseek.com/
+const DEEPSEEK_API_KEY_URL = 'https://platform.deepseek.com/api_keys';
+
 const GEMINI_API_SECRET_KEY_NAME = 'FSIOVN_GEMINI_API_KEY';
 const INPUT_GEMINI_API_KEY_COMMAND = 'ai-autocomplete.inputGeminiAPIKey';
 
@@ -85,6 +90,10 @@ const FIM_INSTRUCTION = 'You are a code completion assistant\n'
 	+ 'Do not add markdown blocks\n';
 
 const CEREBRAS_DEFAULT_MODELS = ['qwen-3-235b-a22b-instruct-2507', 'gpt-oss-120b', 'zai-glm-4.7'];
+
+// Fork patch: DeepSeek's non-reasoning chat model is the right fit for
+// autocomplete (low latency); reasoner is offered but too slow for inline FIM.
+const DEEPSEEK_DEFAULT_MODELS = ['deepseek-chat', 'deepseek-reasoner'];
 
 const GEMINI_DEFAULT_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-flash-latest', 'gemma-4-31b-it', 'gemma-4-26b-a4b-it', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview', 'gemma-3-27b-it', 'gemini-pro-latest'];
 
@@ -382,8 +391,8 @@ async function registerInputGeminiAPIKeyCommand(context) {
 
 			const geminiAPIKey = await vscode.window.showInputBox({
 				title: 'Input Gemini/Cerebras API key',
-				prompt: '................................................................ Enter your Gemini/Cerebras API key ................................................................ .............................. Get free Cerebras API key at https://cloud.cerebras.ai (recommended) .............................. ............................... Get free Gemini API key at https://aistudio.google.com/u/1/api-keys ............................... --------------------------------------------------------------------------------------------------------------',
-				placeHolder: `Paste your Gemini/Cerebras API key here. ${await context.secrets.get(GEMINI_API_SECRET_KEY_NAME) ? 'Type DELETE to remove saved key.' : ''}`,
+				prompt: '................................................................ Enter your Gemini/Cerebras/DeepSeek API key ................................................................ .............................. Get free Cerebras API key at https://cloud.cerebras.ai (recommended) .............................. ............................... Get free Gemini API key at https://aistudio.google.com/u/1/api-keys .............................. ............................... Get DeepSeek API key at https://platform.deepseek.com/api_keys ............................... --------------------------------------------------------------------------------------------------------------',
+				placeHolder: `Paste your Gemini/Cerebras/DeepSeek API key here. ${await context.secrets.get(GEMINI_API_SECRET_KEY_NAME) ? 'Type DELETE to remove saved key.' : ''}`,
 				password: true, // Mark input characters for security
 				ignoreFocusOut: true, // Keep the input box open when clicking outside
 				validateInput: (text) => {
@@ -394,10 +403,11 @@ async function registerInputGeminiAPIKeyCommand(context) {
 			if (geminiAPIKey) {
 				if (geminiAPIKey.toUpperCase() === 'DELETE') {
 					await context.secrets.delete(GEMINI_API_SECRET_KEY_NAME);
-					vscode.window.showInformationMessage(`${geminiAPIKey?.startsWith('csk-') ? 'Cerebras' : 'Gemini'} API key deleted.`);
+					// Fork patch: recognize DeepSeek keys (sk- prefix) in the toast too.
+					vscode.window.showInformationMessage(`${geminiAPIKey?.startsWith('csk-') ? 'Cerebras' : geminiAPIKey?.startsWith('sk-') ? 'DeepSeek' : 'Gemini'} API key deleted.`);
 				} else {
 					await context.secrets.store(GEMINI_API_SECRET_KEY_NAME, geminiAPIKey?.trim());
-					vscode.window.showInformationMessage(`${geminiAPIKey?.startsWith('csk-') ? 'Cerebras' : 'Gemini'} API key saved.`);
+					vscode.window.showInformationMessage(`${geminiAPIKey?.startsWith('csk-') ? 'Cerebras' : geminiAPIKey?.startsWith('sk-') ? 'DeepSeek' : 'Gemini'} API key saved.`);
 				}
 			} else {
 				vscode.window.showErrorMessage('Gemini/Cerebras API key input cancelled.');
@@ -433,6 +443,11 @@ async function registerSelectModelCommand(context) {
 
 			if (String(apiKey).startsWith('AIza')) {
 				models.push(...GEMINI_DEFAULT_MODELS);
+			}
+
+			// Fork patch: offer DeepSeek models when a DeepSeek key is stored.
+			if (String(apiKey).startsWith('sk-')) {
+				models.push(...DEEPSEEK_DEFAULT_MODELS);
 			}
 
 			const model = await vscode.window.showQuickPick(models, {
@@ -718,6 +733,11 @@ async function fillInMiddle(context, token, filename, programmingLanguage, prefi
 			return await cerebrasFillInMiddle(context, token, filename, programmingLanguage, prefix, suffix, geminiAPIKey);
 		}
 
+		// Fork patch: route DeepSeek keys (sk- prefix) to the DeepSeek endpoint.
+		if (String(geminiAPIKey).startsWith('sk-')) {
+			return await deepseekFillInMiddle(context, token, filename, programmingLanguage, prefix, suffix, geminiAPIKey);
+		}
+
 		return await geminiFillInMiddle(context, token, filename, programmingLanguage, prefix, suffix, geminiAPIKey);
 
 	} catch (error) {
@@ -745,6 +765,19 @@ async function cerebrasFillInMiddle(context, token, filename, programmingLanguag
 	const model = await context.globalState.get('ai-autocomplete.model');
 
 	return String(apiKey).startsWith('csk-') ? await openAICompatibleFillInMiddleFailover(context, token, filename, programmingLanguage, prefix, suffix, baseURL, apiKey, CEREBRAS_DEFAULT_MODELS.includes(model) ? [model] : [...CEREBRAS_DEFAULT_MODELS]) : null;
+
+}
+
+// Fork patch: DeepSeek provider, mirroring cerebrasFillInMiddle.
+// Keys look like 'sk-...' and the endpoint is OpenAI-compatible.
+// Ref: https://api-docs.deepseek.com/api/create-chat-completion
+async function deepseekFillInMiddle(context, token, filename, programmingLanguage, prefix, suffix, apiKey) {
+
+	const baseURL = 'https://api.deepseek.com/chat/completions';
+
+	const model = await context.globalState.get('ai-autocomplete.model');
+
+	return String(apiKey).startsWith('sk-') ? await openAICompatibleFillInMiddleFailover(context, token, filename, programmingLanguage, prefix, suffix, baseURL, apiKey, DEEPSEEK_DEFAULT_MODELS.includes(model) ? [model] : [...DEEPSEEK_DEFAULT_MODELS]) : null;
 
 }
 
@@ -995,6 +1028,8 @@ async function getGeminiAPIKey(context) {
 			'Open source AI code autocomplete for Visual Studio Code. [fsiovn] AI Autocomplete',
 			GET_CEREBRAS_API_KEY_BUTTON_LABEL,
 			GET_GEMINI_API_KEY_BUTTON_LABEL,
+			// Fork patch: add a button linking to DeepSeek's key page.
+			'Get DeepSeek API key',
 			await context.secrets.get(GEMINI_API_SECRET_KEY_NAME) ? CHANGE_GEMINI_API_KEY_BUTTON_LABEL : INPUT_GEMINI_API_KEY_BUTTON_LABEL
 		);
 
@@ -1006,6 +1041,11 @@ async function getGeminiAPIKey(context) {
 		}
 		if (result === GET_GEMINI_API_KEY_BUTTON_LABEL) {
 			vscode.env.openExternal(vscode.Uri.parse(GET_GEMINI_API_KEY_URL));
+			promptInputGeminiAPIKey(context);
+		}
+		// Fork patch: open DeepSeek's API-key page when its button was clicked.
+		if (result === 'Get DeepSeek API key') {
+			vscode.env.openExternal(vscode.Uri.parse(DEEPSEEK_API_KEY_URL));
 			promptInputGeminiAPIKey(context);
 		}
 		if (result === INPUT_GEMINI_API_KEY_BUTTON_LABEL || result === CHANGE_GEMINI_API_KEY_BUTTON_LABEL) {
@@ -1042,7 +1082,8 @@ async function inputGeminiAPIKey() {
 
 		// Waiting for user to click button
 		const result = await vscode.window.showErrorMessage(
-			'Input API key to use AI Autocomplete extension. Gemini/Cerebras API key not found.',
+			// Fork patch: mention DeepSeek in the missing-key error.
+			'Input API key to use AI Autocomplete extension. Gemini/Cerebras/DeepSeek API key not found.',
 			INPUT_GEMINI_API_KEY_BUTTON_LABEL,
 			GET_CEREBRAS_API_KEY_BUTTON_LABEL,
 			GET_GEMINI_API_KEY_BUTTON_LABEL
